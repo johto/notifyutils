@@ -1,7 +1,7 @@
 /*
 
-NotifySemaphore is a utility library for consumers that use LISTEN / NOTIFY to
-avoid polling the database for new work.
+NotifySemaphore is a utility library for consumers that using LISTEN / NOTIFY
+to avoid polling the database for new work.
 
 
 Usage
