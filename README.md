@@ -3,3 +3,6 @@ A collection of utilities for working with pq.Listener.  See the
 information.
 
 Still a work in progress, use with caution.
+
+
+Development partly funded by my employer [Trustly Group AB](https://trustly.com).
