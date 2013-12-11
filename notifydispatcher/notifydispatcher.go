@@ -5,26 +5,23 @@ dynamic set of independent listeners.
 
 Usage
 
-
-If the Listener emits a ListenerEventReconnected event, all listeners
-receive a notification with BePid set to -1.
-
+Viz:
 
     import (
         "github.com/lib/pq"
-        "github.com/johto/notifydispatcher"
+        "github.com/johto/notifyutils/notifydispatcher"
         "fmt"
         "time"
     )
 
     func listener(dispatcher *notifydispatcher.NotifyDispatcher) {
-        ch := make(chan pq.Notification, 8)
+        ch := make(chan *pq.Notification, 8)
         err := dispatcher.Listen("listenerchannel", ch)
         if err != nil {
             panic(err)
         }
         for n := range ch {
-            if n.BePid == -1 {
+            if n == nil {
                 fmt.Println("lost connection, but we're fine now!")
                 continue
             }
@@ -36,7 +33,7 @@ receive a notification with BePid set to -1.
     }
 
     func main() {
-        dispatcher := notifydispatcher.NewNotifyDispatcher(pq.NewListener("", time.Second, time.Minute))
+        dispatcher := notifydispatcher.NewNotifyDispatcher(pq.NewListener("", time.Second, time.Minute, nil))
         for i := 0; i < 8; i++ {
             go listener(dispatcher)
         }
@@ -125,12 +122,7 @@ func (d *NotifyDispatcher) broadcast() {
 
 	d.lock.Lock()
 	for channel, set := range d.channels {
-		n := pq.Notification{
-			BePid: -1,
-			Channel: channel,
-			Extra: "",
-		}
-		if !set.broadcast(d.slowReaderEliminationStrategy, n) {
+		if !set.broadcast(d.slowReaderEliminationStrategy) {
 			reapchans = append(reapchans, channel)
 		}
 	}
@@ -141,13 +133,13 @@ func (d *NotifyDispatcher) broadcast() {
 	}
 }
 
-func (d *NotifyDispatcher) dispatch(n pq.Notification) {
+func (d *NotifyDispatcher) dispatch(n *pq.Notification) {
 	reap := false
 
 	d.lock.Lock()
 	set, ok := d.channels[n.Channel]
 	if ok {
-		reap = !set.broadcast(d.slowReaderEliminationStrategy, n)
+		reap = !set.broadcast(d.slowReaderEliminationStrategy)
 	}
 	d.lock.Unlock()
 
@@ -158,13 +150,11 @@ func (d *NotifyDispatcher) dispatch(n pq.Notification) {
 
 func (d *NotifyDispatcher) dispatcherLoop() {
 	for {
-		select {
-			case e := <-d.listener.Event:
-				if e.Event == pq.ListenerEventReconnected {
-					d.broadcast()
-				}
-			case n := <-d.listener.Notify:
-				d.dispatch(n)
+		n := <-d.listener.Notify
+		if n == nil {
+			d.broadcast()
+		} else {
+			d.dispatch(n)
 		}
 	}
 }
@@ -258,7 +248,7 @@ func (d *NotifyDispatcher) requestListen(channel string, unlisten bool) error {
 // ErrChannelAlreadyActive is returned.  After Listen has returned, the
 // notification channel is open and the dispatcher will attempt to deliver all
 // notifications received for that channel to ch.
-func (d *NotifyDispatcher) Listen(channel string, ch chan<- pq.Notification) error {
+func (d *NotifyDispatcher) Listen(channel string, ch chan<- *pq.Notification) error {
 	d.lock.Lock()
 	defer d.lock.Unlock()
 
@@ -291,7 +281,7 @@ func (d *NotifyDispatcher) Listen(channel string, ch chan<- pq.Notification) err
 // Removes ch from the set of listeners for notification channel channel.  If
 // ch is not in the set of listeners for channel, ErrChannelNotActive is
 // returned.
-func (d *NotifyDispatcher) Unlisten(channel string, ch chan<- pq.Notification) error {
+func (d *NotifyDispatcher) Unlisten(channel string, ch chan<- *pq.Notification) error {
 	d.lock.Lock()
 
 	if d.closed {
@@ -335,6 +325,8 @@ func (d *NotifyDispatcher) Close() error {
 		set.activeOrClosedCond.Broadcast()
 	}
 
+	// TODO: kill the dispatcher as well
+
 	return nil
 }
 
@@ -352,14 +344,14 @@ const (
 )
 
 type listenSet struct {
-	channels map[chan<- pq.Notification] struct{}
+	channels map[chan<- *pq.Notification] struct{}
 	state listenSetState
 	activeOrClosedCond *sync.Cond
 }
 
-func (d *NotifyDispatcher) newListenSet(firstInhabitant chan<- pq.Notification) *listenSet {
+func (d *NotifyDispatcher) newListenSet(firstInhabitant chan<- *pq.Notification) *listenSet {
 	s := &listenSet{
-		channels: make(map[chan<- pq.Notification] struct{}),
+		channels: make(map[chan<- *pq.Notification] struct{}),
 		state: listenSetStateNewborn,
 	}
 	s.activeOrClosedCond = sync.NewCond(&d.lock)
@@ -386,7 +378,7 @@ func (s *listenSet) setState(newState listenSetState) {
 	}
 }
 
-func (s *listenSet) add(ch chan<- pq.Notification) error {
+func (s *listenSet) add(ch chan<- *pq.Notification) error {
 	_, ok := s.channels[ch]
 	if ok {
 		return ErrChannelAlreadyActive
@@ -395,7 +387,7 @@ func (s *listenSet) add(ch chan<- pq.Notification) error {
 	return nil
 }
 
-func (s *listenSet) remove(ch chan<- pq.Notification) (last bool, err error) {
+func (s *listenSet) remove(ch chan<- *pq.Notification) (last bool, err error) {
 	_, ok := s.channels[ch]
 	if !ok {
 		return false, ErrChannelNotActive
@@ -409,7 +401,7 @@ func (s *listenSet) remove(ch chan<- pq.Notification) (last bool, err error) {
 	return false, nil
 }
 
-func (s *listenSet) broadcast(strategy SlowReaderEliminationStrategy, n pq.Notification) bool {
+func (s *listenSet) broadcast(strategy SlowReaderEliminationStrategy) bool {
 	// must be active
 	if s.state != listenSetStateActive {
 		return true
@@ -417,7 +409,7 @@ func (s *listenSet) broadcast(strategy SlowReaderEliminationStrategy, n pq.Notif
 
 	for ch := range s.channels {
 		select {
-			case ch <- n:
+			case ch <- nil:
 
 			default:
 				if strategy == CloseSlowReaders {
