@@ -38,7 +38,7 @@ An example of the intended usage pattern:
     }
 
     func main() {
-        listener := pq.NewListener("", 15 * time.Second, time.Minute)
+        listener := pq.NewListener("", 15 * time.Second, time.Minute, nil)
         notifysemaphore := notifysemaphore.NewNotifySemaphore(listener)
 
         // It is important here that the order of operations is:
@@ -73,8 +73,6 @@ import (
 
 var errClosed = errors.New("NotifySemaphore has been closed")
 
-type EventCallback func (pq.ListenerEvent)
-
 type NotifySemaphore struct {
 	listener *pq.Listener
 
@@ -84,8 +82,6 @@ type NotifySemaphore struct {
 
 	newPingIntervalChannel chan time.Duration
 	broadcastOnPingTimeout bool
-
-	eventCallback EventCallback
 
 	lock sync.Mutex
 	channels map[string] chan<- *pq.Notification
@@ -204,12 +200,6 @@ func (s *NotifySemaphore) SetBroadcastOnPingTimeout(broadcastOnPingTimeout bool)
 	s.lock.Unlock()
 }
 
-func (s *NotifySemaphore) SetEventCallback(eventCallback EventCallback) {
-	s.lock.Lock()
-	s.eventCallback = eventCallback
-	s.lock.Unlock()
-}
-
 func (s *NotifySemaphore) pingTimeout() {
 	go func() {
 		s.listener.Ping()
@@ -286,19 +276,12 @@ func (s *NotifySemaphore) mainDispatcherLoop() {
 		}
 
 		select {
-			case ev := <-s.listener.Event:
-				s.lock.Lock()
-				if ev.Event == pq.ListenerEventReconnected {
-					s.broadcast()
-				}
-				if s.eventCallback != nil {
-					s.eventCallback(ev)
-				}
-				s.lock.Unlock()
-
 			case n := <-s.listener.Notify:
 				s.lock.Lock()
-				s.notify(n.Channel, &n)
+				if n == nil {
+					s.broadcast()
+				}
+				s.notify(n.Channel, n)
 				s.lock.Unlock()
 
 			case <-s.closeChannel:
