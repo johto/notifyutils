@@ -280,8 +280,9 @@ func (s *NotifySemaphore) mainDispatcherLoop() {
 				s.lock.Lock()
 				if n == nil {
 					s.broadcast()
+				} else {
+					s.notify(n.Channel, n)
 				}
-				s.notify(n.Channel, n)
 				s.lock.Unlock()
 
 			case <-s.closeChannel:
