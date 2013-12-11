@@ -40,14 +40,22 @@ An example of the intended usage pattern:
     func main() {
         listener := pq.NewListener("", 15 * time.Second, time.Minute)
         notifysemaphore := notifysemaphore.NewNotifySemaphore(listener)
+
+        // It is important here that the order of operations is:
+        //   1) Listen()
+        //   2) Process *all* work
+        //   3) Wait for a notification (possibly queued while in step 2)
+        //   4) Go to 2
+        //
+        // Following this order guarantees that there will never be work
+        // available in the database for extended periods of time without your
+        // application knowing about it.
         sem, err := notifysemaphore.Listen("getwork")
         if err != nil {
             panic(err)
         }
 
         for {
-            // It is important to process any work waiting in the database
-            // *before* we start waiting for new notifications.
             work()
             <-sem
         }
