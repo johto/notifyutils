@@ -140,7 +140,7 @@ func (d *NotifyDispatcher) SetBroadcastOnConnectionLoss(value bool) {
 
 // Opens a new "broadcast channel".  A broadcast channel is sent to by the
 // NotifyDispatcher every time the underlying Listener has re-established its
-// server connection.
+// database connection.
 func (d *NotifyDispatcher) OpenBroadcastChannel() BroadcastChannel {
 	d.lock.Lock()
 	defer d.lock.Unlock()
@@ -165,7 +165,7 @@ func (d *NotifyDispatcher) CloseBroadcastChannel(ch BroadcastChannel) {
 
 // Broadcast on all broadcastChannels and on all channels unless
 // broadcastOnConnectionLoss is disabled.
-func (d *NotifyDispatcher) maybeBroadcast() {
+func (d *NotifyDispatcher) broadcast() {
 	reapchans := []string{}
 
 	d.lock.Lock()
@@ -213,7 +213,7 @@ func (d *NotifyDispatcher) dispatcherLoop() {
 	for {
 		n := <-d.listener.Notify
 		if n == nil {
-			d.maybeBroadcast()
+			d.broadcast()
 		} else {
 			d.dispatch(n)
 		}
