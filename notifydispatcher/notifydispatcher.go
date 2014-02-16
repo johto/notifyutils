@@ -44,6 +44,7 @@ Viz:
 package notifydispatcher
 
 import (
+	"container/list"
 	"errors"
 	"fmt"
 	"github.com/lib/pq"
@@ -80,9 +81,19 @@ type listenRequest struct {
 	unlisten bool
 }
 
+type BroadcastChannel struct {
+	Channel chan struct{}
+	elem *list.Element
+}
+
 type NotifyDispatcher struct {
 	listener *pq.Listener
+
+	// Some details about the behaviour.  Only touch or look at while holding
+	// "lock".
 	slowReaderEliminationStrategy SlowReaderEliminationStrategy
+	broadcastOnConnectionLoss bool
+	broadcastChannels *list.List
 
 	listenRequestch chan listenRequest
 
@@ -100,6 +111,8 @@ func NewNotifyDispatcher(l *pq.Listener) *NotifyDispatcher {
 	d := &NotifyDispatcher{
 		listener: l,
 		slowReaderEliminationStrategy: CloseSlowReaders,
+		broadcastOnConnectionLoss: true,
+		broadcastChannels: list.New(),
 		listenRequestch: make(chan listenRequest, 64),
 		channels: make(map[string] *listenSet),
 		closeChannel: make(chan bool),
@@ -117,10 +130,58 @@ func (d *NotifyDispatcher) SetSlowReaderEliminationStrategy(strategy SlowReaderE
 	d.slowReaderEliminationStrategy = strategy
 }
 
-func (d *NotifyDispatcher) broadcast() {
+// Controls whether a nil notification from the underlying Listener is
+// broadcast to all channels in the set.
+func (d *NotifyDispatcher) SetBroadcastOnConnectionLoss(value bool) {
+	d.lock.Lock()
+	defer d.lock.Unlock()
+	d.broadcastOnConnectionLoss = value
+}
+
+// Opens a new "broadcast channel".  A broadcast channel is sent to by the
+// NotifyDispatcher every time the underlying Listener has re-established its
+// server connection.
+func (d *NotifyDispatcher) OpenBroadcastChannel() BroadcastChannel {
+	d.lock.Lock()
+	defer d.lock.Unlock()
+
+	ch := BroadcastChannel{
+		Channel: make(chan struct{}, 1),
+	}
+	ch.elem = d.broadcastChannels.PushFront(ch)
+	return ch
+}
+
+// Closes the broadcast channel ch.
+func (d *NotifyDispatcher) CloseBroadcastChannel(ch BroadcastChannel) {
+	d.lock.Lock()
+	defer d.lock.Unlock()
+
+	if d.broadcastChannels.Remove(ch.elem) != ch {
+		panic("oops")
+	}
+	close(ch.Channel)
+}
+
+// Broadcast on all broadcastChannels and on all channels unless
+// broadcastOnConnectionLoss is disabled.
+func (d *NotifyDispatcher) maybeBroadcast() {
 	reapchans := []string{}
 
 	d.lock.Lock()
+	for e := d.broadcastChannels.Front(); e != nil; e = e.Next() {
+		select {
+			case e.Value.(BroadcastChannel).Channel <- struct{}{}:
+			default:
+				// nothing to do
+		}
+	}
+
+	if !d.broadcastOnConnectionLoss {
+		d.lock.Unlock()
+		return
+	}
+
 	for channel, set := range d.channels {
 		if !set.broadcast(d.slowReaderEliminationStrategy) {
 			reapchans = append(reapchans, channel)
@@ -152,13 +213,15 @@ func (d *NotifyDispatcher) dispatcherLoop() {
 	for {
 		n := <-d.listener.Notify
 		if n == nil {
-			d.broadcast()
+			d.maybeBroadcast()
 		} else {
 			d.dispatch(n)
 		}
 	}
 }
 
+// Attempt to start listening on channel.  The caller should not be holding
+// lock.
 func (d *NotifyDispatcher) execListen(channel string) {
 	for {
 		err := d.listener.Listen(channel)
@@ -242,12 +305,13 @@ func (d *NotifyDispatcher) requestListen(channel string, unlisten bool) error {
 }
 
 // Listen adds ch to the set of listeners for notification channel channel.  ch
-// should be a buffered channel.  If SlowReaderEliminationStrategy is
-// CloseSlowReaders, ch should not already be a listener of a different
-// channel.  If ch is already in the set of listeners for channel,
-// ErrChannelAlreadyActive is returned.  After Listen has returned, the
-// notification channel is open and the dispatcher will attempt to deliver all
-// notifications received for that channel to ch.
+// should be a buffered channel.  If ch is already in the set of listeners for
+// channel, ErrChannelAlreadyActive is returned.  After Listen has returned,
+// the notification channel is open and the dispatcher will attempt to deliver
+// all notifications received for that channel to ch.
+//
+// If SlowReaderEliminationStrategy is CloseSlowReaders, reusing the same ch
+// for multiple notification channels is not allowed.
 func (d *NotifyDispatcher) Listen(channel string, ch chan<- *pq.Notification) error {
 	d.lock.Lock()
 	defer d.lock.Unlock()
