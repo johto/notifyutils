@@ -166,8 +166,6 @@ func (d *NotifyDispatcher) CloseBroadcastChannel(ch BroadcastChannel) {
 // Broadcast on all broadcastChannels and on all channels unless
 // broadcastOnConnectionLoss is disabled.
 func (d *NotifyDispatcher) broadcast() {
-	reapchans := []string{}
-
 	d.lock.Lock()
 	for e := d.broadcastChannels.Front(); e != nil; e = e.Next() {
 		select {
@@ -182,6 +180,7 @@ func (d *NotifyDispatcher) broadcast() {
 		return
 	}
 
+	var reapchans []string
 	for channel, set := range d.channels {
 		if !set.broadcast(d.slowReaderEliminationStrategy, nil) {
 			reapchans = append(reapchans, channel)
@@ -359,16 +358,14 @@ func (d *NotifyDispatcher) Unlisten(channel string, ch chan<- *pq.Notification) 
 		return ErrChannelNotActive
 	}
 	last, err := set.remove(ch)
+	d.lock.Unlock()
 	if err != nil {
-		d.lock.Unlock()
 		return err
 	}
 	if !last {
 		// the set isn't empty; nothing further for us to do
-		d.lock.Unlock()
 		return nil
 	}
-	d.lock.Unlock()
 
 	// we were the last listener, cue the reaper
 	return d.requestListen(channel, true)
@@ -451,6 +448,8 @@ func (s *listenSet) add(ch chan<- *pq.Notification) error {
 	return nil
 }
 
+// Removes ch from the listen set.  last is false if ch was the last listener
+// in the set and the caller should request an UNLISTEN.
 func (s *listenSet) remove(ch chan<- *pq.Notification) (last bool, err error) {
 	_, ok := s.channels[ch]
 	if !ok {
@@ -465,6 +464,11 @@ func (s *listenSet) remove(ch chan<- *pq.Notification) (last bool, err error) {
 	return false, nil
 }
 
+// Sends n to all listeners in the set, using the supplied
+// SlowReaderEliminationStrategy.  n may be nil.  Returns false if the set is
+// empty (or was emptied as a result of eliminating slow readers) and the
+// caller should request an UNLISTEN on it.  The caller should be holding
+// d.lock.
 func (s *listenSet) broadcast(strategy SlowReaderEliminationStrategy, n *pq.Notification) bool {
 	// must be active
 	if s.state != listenSetStateActive {
