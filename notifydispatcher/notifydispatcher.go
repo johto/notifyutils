@@ -209,8 +209,15 @@ func (d *NotifyDispatcher) dispatch(n *pq.Notification) {
 }
 
 func (d *NotifyDispatcher) dispatcherLoop() {
+dispatcherLoop:
 	for {
-		n := <-d.listener.Notify
+		var n *pq.Notification
+		select {
+			case <- d.closeChannel:
+				break dispatcherLoop
+			case n = <-d.listener.Notify:
+		}
+
 		if n == nil {
 			d.broadcast()
 		} else {
@@ -385,8 +392,6 @@ func (d *NotifyDispatcher) Close() error {
 	for _, set := range d.channels {
 		set.activeOrClosedCond.Broadcast()
 	}
-
-	// TODO: kill the dispatcher as well
 
 	return nil
 }
