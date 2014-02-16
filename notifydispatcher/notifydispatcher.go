@@ -183,7 +183,7 @@ func (d *NotifyDispatcher) broadcast() {
 	}
 
 	for channel, set := range d.channels {
-		if !set.broadcast(d.slowReaderEliminationStrategy) {
+		if !set.broadcast(d.slowReaderEliminationStrategy, nil) {
 			reapchans = append(reapchans, channel)
 		}
 	}
@@ -200,7 +200,7 @@ func (d *NotifyDispatcher) dispatch(n *pq.Notification) {
 	d.lock.Lock()
 	set, ok := d.channels[n.Channel]
 	if ok {
-		reap = !set.broadcast(d.slowReaderEliminationStrategy)
+		reap = !set.broadcast(d.slowReaderEliminationStrategy, n)
 	}
 	d.lock.Unlock()
 
@@ -465,7 +465,7 @@ func (s *listenSet) remove(ch chan<- *pq.Notification) (last bool, err error) {
 	return false, nil
 }
 
-func (s *listenSet) broadcast(strategy SlowReaderEliminationStrategy) bool {
+func (s *listenSet) broadcast(strategy SlowReaderEliminationStrategy, n *pq.Notification) bool {
 	// must be active
 	if s.state != listenSetStateActive {
 		return true
@@ -473,7 +473,7 @@ func (s *listenSet) broadcast(strategy SlowReaderEliminationStrategy) bool {
 
 	for ch := range s.channels {
 		select {
-			case ch <- nil:
+			case ch <- n:
 
 			default:
 				if strategy == CloseSlowReaders {
