@@ -400,6 +400,19 @@ func TestMultipleGoChannelsOnSingleChannel(t *testing.T) {
 	ml.notify("foo")
 	assertNotification(t, ch1, "foo", "set fully active")
 	assertNotification(t, ch2, "foo", "set fully active")
+
+	// deactivate ch2; nd.Unlisten() should not block
+	assert(t, nd.Unlisten("foo", ch2) == nil, "remove one listener on a shared channel")
+
+	ml.notify("foo")
+	assertNotification(t, ch1, "foo", "set still active for ch1")
+	assertEmptyCh(t, ch2, "ch2 not in set anymore")
+
+	ml.unlisten(nd, "foo", ch1)
+	ml.satisfyUnlisten("foo")
+	ml.notify("foo")
+	assertEmptyCh(t, ch1, "ch1 not in set anymore")
+	assertEmptyCh(t, ch2, "ch2 not in set anymore")
 }
 
 
