@@ -86,8 +86,16 @@ type BroadcastChannel struct {
 	elem *list.Element
 }
 
+// This is the part of *pq.Listener's interface we're using.  pq itself doesn't
+// provide such an interface, but we can just roll our own.
+type Listener interface {
+	Listen(channel string) error
+	Unlisten(channel string) error
+	NotificationChannel() <-chan *pq.Notification
+}
+
 type NotifyDispatcher struct {
-	listener *pq.Listener
+	listener Listener
 
 	// Some details about the behaviour.  Only touch or look at while holding
 	// "lock".
@@ -107,7 +115,7 @@ type NotifyDispatcher struct {
 // NewNotifyDispatcher creates a new NotifyDispatcher, using the supplied
 // pq.Listener underneath.  The ownership of the Listener is transferred to
 // NotifyDispatcher.  You should not use it after calling NewNotifyDispatcher.
-func NewNotifyDispatcher(l *pq.Listener) *NotifyDispatcher {
+func NewNotifyDispatcher(l Listener) *NotifyDispatcher {
 	d := &NotifyDispatcher{
 		listener: l,
 		slowReaderEliminationStrategy: CloseSlowReaders,
@@ -209,13 +217,15 @@ func (d *NotifyDispatcher) dispatch(n *pq.Notification) {
 }
 
 func (d *NotifyDispatcher) dispatcherLoop() {
+	notifyCh := d.listener.NotificationChannel()
+
 dispatcherLoop:
 	for {
 		var n *pq.Notification
 		select {
 			case <- d.closeChannel:
 				break dispatcherLoop
-			case n = <-d.listener.Notify:
+			case n = <-notifyCh:
 		}
 
 		if n == nil {
@@ -246,7 +256,7 @@ func (d *NotifyDispatcher) execListen(channel string) {
 	if !ok {
 		panic("oops")
 	}
-	set.setState(listenSetStateActive)
+	set.markActive()
 }
 
 func (d *NotifyDispatcher) execUnlisten(channel string) {
