@@ -258,6 +258,10 @@ func testSetup(t *testing.T) (*NotifyDispatcher, *mockedListener) {
 func endTest(t *testing.T, nd *NotifyDispatcher, ml *mockedListener) {
 	ml.assertEmptyQueue()
 	assertEmptyCh(t, ml.notifyCh, "must not have any queued notifications at the end of the test")
+	err := nd.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
 
