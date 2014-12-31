@@ -55,6 +55,14 @@ func assert(t *testing.T, cond bool, condition string) {
 		t.FailNow()
 	}
 }
+func assertClosedCh(t *testing.T, ch <-chan *pq.Notification, condition string) {
+	select {
+		case _, ok := <-ch:
+			assert(t, !ok, condition)
+		default:
+			assert(t, false, condition)
+	}
+}
 func assertEmptyCh(t *testing.T, ch <-chan *pq.Notification, condition string) {
 	select {
 		case n, ok := <-ch:
@@ -150,6 +158,14 @@ func (ml *mockedListener) satisfyUnlistenErr(channel string, err error) {
 }
 func (ml *mockedListener) satisfyUnlisten(channel string) {
 	ml.satisfyUnlistenErr(channel, nil)
+}
+// expect a call to Unlisten() not initiated by us
+func (ml *mockedListener) expectUnlisten(channel string) {
+	s13 := make(chan struct{}, 1)
+	s2 := make(chan error, 1)
+	s2 <- nil
+	s4 := make(chan struct{}, 1)
+	ml.push(mlListenRequest{channel, true, s13, s2, s13, s4})
 }
 
 // sends a notification on the specified channel over to the NotifyDispatcher
@@ -473,4 +489,56 @@ func TestUnlistenErr(t *testing.T) {
 	ml.satisfyListenErr("foo", pq.ErrChannelAlreadyOpen)
 	ml.notify("foo")
 	assertNotification(t, ch, "foo", "listen request satisfied")
+}
+
+func TestCloseSlowReaders(t *testing.T) {
+	nd, ml := testSetup(t)
+	defer endTest(t, nd, ml)
+
+	ch1 := make(chan *pq.Notification, 1)
+	ch2 := make(chan *pq.Notification, 2)
+
+	// activate ch1
+	ml.notify("foo")
+	assertEmptyCh(t, ch1, "not listening yet")
+	ml.listen(nd, "foo", ch1)
+
+	yield()
+	ml.notify("foo")
+	assertEmptyCh(t, ch1, "set not active yet")
+
+	ml.satisfyListen("foo")
+	ml.assertEmptyQueue()
+	ml.notify("foo")
+	assertNotification(t, ch1, "foo", "listen request satisfied")
+
+	// activate ch2; nd.Listen() should not block
+	assert(t, nd.Listen("foo", ch2) == nil, "another listener on the same channel")
+
+	yield()
+	ml.notify("foo")
+	assertNotification(t, ch1, "foo", "set still active for ch1")
+	assertNotification(t, ch2, "foo", "set immediately active for ch2")
+
+	ml.notify("foo")
+	assertNotification(t, ch1, "foo", "set fully active")
+	assertNotification(t, ch2, "foo", "set fully active")
+
+	assertEmptyCh(t, ch1, "set not active yet")
+	assertEmptyCh(t, ch2, "set not active yet")
+
+	ml.notify("foo")
+	ml.notify("foo")
+	assertNotification(t, ch1, "foo", "first notification")
+	assertNotification(t, ch2, "foo", "first notification")
+	assertClosedCh(t, ch1, "slow reader; should be closed")
+	assertNotification(t, ch2, "foo", "not a slower reader")
+
+	ml.notify("foo")
+	ml.notify("foo")
+	ml.expectUnlisten("foo")
+	ml.notify("foo")
+	assertNotification(t, ch2, "foo", "first notification")
+	assertNotification(t, ch2, "foo", "second notification")
+	assertClosedCh(t, ch2, "slow reader; should be closed")
 }
