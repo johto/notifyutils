@@ -523,8 +523,8 @@ func TestCloseSlowReaders(t *testing.T) {
 	assertNotification(t, ch1, "foo", "set fully active")
 	assertNotification(t, ch2, "foo", "set fully active")
 
-	assertEmptyCh(t, ch1, "set not active yet")
-	assertEmptyCh(t, ch2, "set not active yet")
+	assertEmptyCh(t, ch1, "no queued notifications")
+	assertEmptyCh(t, ch2, "no queued notifications")
 
 	ml.notify("foo")
 	ml.notify("foo")
@@ -540,4 +540,34 @@ func TestCloseSlowReaders(t *testing.T) {
 	assertNotification(t, ch2, "foo", "first notification")
 	assertNotification(t, ch2, "foo", "second notification")
 	assertClosedCh(t, ch2, "slow reader; should be closed")
+}
+
+func TestNeglectSlowReaders(t *testing.T) {
+	nd, ml := testSetup(t)
+	defer endTest(t, nd, ml)
+
+	nd.SetSlowReaderEliminationStrategy(NeglectSlowReaders)
+
+	ch := make(chan *pq.Notification, 1)
+
+	// activate ch
+	ml.notify("foo")
+	assertEmptyCh(t, ch, "not listening yet")
+	ml.listen(nd, "foo", ch)
+
+	yield()
+	ml.notify("foo")
+	assertEmptyCh(t, ch, "set not active yet")
+
+	ml.satisfyListen("foo")
+	ml.assertEmptyQueue()
+	ml.notify("foo")
+	assertNotification(t, ch, "foo", "listen request satisfied")
+
+	ml.notify("foo")
+	ml.notify("foo")
+	assertNotification(t, ch, "foo", "first notification")
+	assertEmptyCh(t, ch, "not closed, but notification was lost")
+	ml.notify("foo")
+	assertNotification(t, ch, "foo", "notifications are still delivered")
 }
