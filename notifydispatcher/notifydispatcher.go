@@ -213,7 +213,7 @@ func (d *NotifyDispatcher) dispatch(n *pq.Notification) {
 	d.lock.Unlock()
 
 	if reap {
-		d.listenRequestch <- listenRequest{n.Channel, true}
+		d.requestListen(n.Channel, true)
 	}
 }
 
