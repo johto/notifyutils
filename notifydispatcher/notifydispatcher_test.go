@@ -72,6 +72,15 @@ func assertEmptyCh(t *testing.T, ch <-chan *pq.Notification, condition string) {
 		default:
 	}
 }
+func assertEmptyBroadcastCh(t *testing.T, ch BroadcastChannel, condition string) {
+	select {
+		case _, ok := <-ch.Channel:
+			assert(t, ok, "channel must not be closed in assertEmptyBroadcastCh")
+			t.Errorf("received notification in assertBroadcastEmptyCh()")
+			assert(t, false, condition)
+		default:
+	}
+}
 func assertNotification(t *testing.T, ch <-chan *pq.Notification, channel string, condition string) {
 	// This is sketchy as hell, but nothing else seems to be working :-(  The
 	// problem is that by the time we run this function, it's not guaranteed
@@ -646,4 +655,7 @@ func TestBroadcastChannels(t *testing.T) {
 	ml.broadcast()
 	assertBroadcastNotification(t, ch1, "broadcast")
 	assertBroadcastNotification(t, ch2, "broadcast")
+
+	assertEmptyBroadcastCh(t, ch1, "buffer of 1")
+	assertEmptyBroadcastCh(t, ch2, "buffer of 1")
 }
