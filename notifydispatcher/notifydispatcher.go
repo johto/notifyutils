@@ -197,7 +197,7 @@ func (d *NotifyDispatcher) broadcast() {
 	d.lock.Unlock()
 
 	for _, ch := range reapchans {
-		d.listenRequestch <- listenRequest{ch, true}
+		d.requestListen(ch, true)
 	}
 }
 
