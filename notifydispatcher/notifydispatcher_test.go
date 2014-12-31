@@ -575,3 +575,39 @@ func TestNeglectSlowReaders(t *testing.T) {
 	ml.notify("foo")
 	assertNotification(t, ch, "foo", "notifications are still delivered")
 }
+
+func TestExportedErrors(t *testing.T) {
+	nd, ml := testSetup(t)
+	defer endTest(t, nd, ml)
+
+	nd.SetSlowReaderEliminationStrategy(NeglectSlowReaders)
+
+	ch := make(chan *pq.Notification, 1)
+
+	// activate ch
+	ml.notify("foo")
+	assertEmptyCh(t, ch, "not listening yet")
+	ml.listen(nd, "foo", ch)
+
+	yield()
+	ml.notify("foo")
+	assertEmptyCh(t, ch, "set not active yet")
+
+	ml.satisfyListen("foo")
+	ml.assertEmptyQueue()
+	ml.notify("foo")
+	assertNotification(t, ch, "foo", "listen request satisfied")
+
+	err := nd.Listen("foo", ch)
+	if err != ErrChannelAlreadyActive {
+		t.Fatalf("expected ErrChannelAlreadyActive; got %+#v", err)
+	}
+	err = nd.Unlisten("bar", make(chan *pq.Notification))
+	if err != ErrChannelNotActive {
+		t.Fatalf("expected ErrChannelNotActive; got %+#v", err)
+	}
+	err = nd.Unlisten("foo", make(chan *pq.Notification))
+	if err != ErrChannelNotActive {
+		t.Fatalf("expected ErrChannelNotActive; got %+#v", err)
+	}
+}
