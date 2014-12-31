@@ -198,7 +198,14 @@ func (d *NotifyDispatcher) broadcast() {
 	d.lock.Unlock()
 
 	for _, ch := range reapchans {
-		d.requestListen(ch, true)
+		err := d.requestListen(ch, true)
+		if err != nil {
+			// must be errClosed
+			if err != errClosed {
+				panic(err)
+			}
+			break
+		}
 	}
 }
 
@@ -213,7 +220,10 @@ func (d *NotifyDispatcher) dispatch(n *pq.Notification) {
 	d.lock.Unlock()
 
 	if reap {
-		d.requestListen(n.Channel, true)
+		err := d.requestListen(n.Channel, true)
+		if err != nil && err != errClosed {
+			panic(err)
+		}
 	}
 }
 
@@ -224,7 +234,7 @@ dispatcherLoop:
 	for {
 		var n *pq.Notification
 		select {
-			case <- d.closeChannel:
+			case <-d.closeChannel:
 				break dispatcherLoop
 			case n = <-notifyCh:
 		}
