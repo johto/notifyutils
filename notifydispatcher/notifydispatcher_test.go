@@ -81,7 +81,7 @@ func assertEmptyBroadcastCh(t *testing.T, ch BroadcastChannel, condition string)
 		default:
 	}
 }
-func assertNotification(t *testing.T, ch <-chan *pq.Notification, channel string, condition string) {
+func assertNotification(t *testing.T, ch <-chan *pq.Notification, channel interface{}, condition string) {
 	// This is sketchy as hell, but nothing else seems to be working :-(  The
 	// problem is that by the time we run this function, it's not guaranteed
 	// that the dispatcherLoop in NotificationDispatcher will have executed for
@@ -98,8 +98,14 @@ func assertNotification(t *testing.T, ch <-chan *pq.Notification, channel string
 
 	select {
 		case n := <-ch:
-			assert(t, n.Channel == channel,
-				   fmt.Sprintf("channel %s must be %s", n.Channel, channel))
+			if channel == nil {
+				assert(t, n == nil,
+					   fmt.Sprintf("notification %+#v must be nil", n))
+			} else {
+				chstr := channel.(string)
+				assert(t, n.Channel == chstr,
+					   fmt.Sprintf("channel %s must be %s", n.Channel, chstr))
+			}
 		default:
 			assert(t, false, condition)
 	}
@@ -182,7 +188,7 @@ func (ml *mockedListener) satisfyUnlisten(channel string) {
 }
 // expect a call to Unlisten() not initiated by us
 func (ml *mockedListener) expectUnlisten(channel string) {
-	s13 := make(chan struct{}, 1)
+	s13 := make(chan struct{}, 2)
 	s2 := make(chan error, 1)
 	s2 <- nil
 	ml.push(mlListenRequest{channel, true, s13, s2, s13, nil})
@@ -659,3 +665,70 @@ func TestBroadcastChannels(t *testing.T) {
 	assertEmptyBroadcastCh(t, ch1, "buffer of 1")
 	assertEmptyBroadcastCh(t, ch2, "buffer of 1")
 }
+
+func TestCloseSlowReadersOnBroadcast(t *testing.T) {
+	nd, ml := testSetup(t)
+	defer endTest(t, nd, ml)
+
+	ch1 := make(chan *pq.Notification, 1)
+	ch2 := make(chan *pq.Notification, 1)
+	ch3 := make(chan *pq.Notification, 1)
+
+	// activate ch1
+	ml.notify("foo")
+	assertEmptyCh(t, ch1, "not listening yet")
+	ml.listen(nd, "foo", ch1)
+
+	yield()
+	ml.notify("foo")
+	assertEmptyCh(t, ch1, "set not active yet")
+
+	ml.satisfyListen("foo")
+	ml.assertEmptyQueue()
+	ml.notify("foo")
+	assertNotification(t, ch1, "foo", "listen request satisfied")
+
+	// activate ch2; nd.Listen() should not block
+	assert(t, nd.Listen("foo", ch2) == nil, "another listener on the same channel")
+
+	yield()
+	ml.notify("foo")
+	assertNotification(t, ch1, "foo", "set still active for ch1")
+	assertNotification(t, ch2, "foo", "set immediately active for ch2")
+
+	ml.notify("foo")
+	assertNotification(t, ch1, "foo", "set fully active")
+	assertNotification(t, ch2, "foo", "set fully active")
+
+	assertEmptyCh(t, ch1, "no queued notifications")
+	assertEmptyCh(t, ch2, "no queued notifications")
+
+	ml.broadcast()
+	ml.expectUnlisten("foo")
+	ml.broadcast()
+	assertNotification(t, ch1, nil, "first notification")
+	assertNotification(t, ch2, nil, "first notification")
+	assertClosedCh(t, ch1, "slow reader; should be closed")
+	assertClosedCh(t, ch2, "slow reader; should be closed")
+
+	// now with just one channel
+	ml.notify("bar")
+	assertEmptyCh(t, ch3, "not listening yet")
+	ml.listen(nd, "bar", ch3)
+
+	yield()
+	ml.notify("bar")
+	assertEmptyCh(t, ch3, "set not active yet")
+
+	ml.satisfyListen("bar")
+	ml.assertEmptyQueue()
+	ml.notify("bar")
+	assertNotification(t, ch3, "bar", "listen request satisfied")
+
+	ml.broadcast()
+	ml.expectUnlisten("bar")
+	ml.broadcast()
+	assertNotification(t, ch3, nil, "first notification")
+	assertClosedCh(t, ch3, "slow reader; should be closed")
+}
+
