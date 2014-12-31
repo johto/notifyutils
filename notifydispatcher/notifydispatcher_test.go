@@ -164,8 +164,7 @@ func (ml *mockedListener) expectUnlisten(channel string) {
 	s13 := make(chan struct{}, 1)
 	s2 := make(chan error, 1)
 	s2 <- nil
-	s4 := make(chan struct{}, 1)
-	ml.push(mlListenRequest{channel, true, s13, s2, s13, s4})
+	ml.push(mlListenRequest{channel, true, s13, s2, s13, nil})
 }
 
 // sends a notification on the specified channel over to the NotifyDispatcher
