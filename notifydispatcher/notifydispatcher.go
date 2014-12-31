@@ -454,6 +454,9 @@ func (s *listenSet) setState(newState listenSetState) {
 	}
 }
 
+// Add ch to the listen set.  Return ErrChannelAlreadyActive if the channel
+// already is part of the set, or nil otherwise.  The caller should be holding
+// d.lock.
 func (s *listenSet) add(ch chan<- *pq.Notification) error {
 	_, ok := s.channels[ch]
 	if ok {
@@ -510,7 +513,7 @@ func (s *listenSet) broadcast(strategy SlowReaderEliminationStrategy, n *pq.Noti
 	return true
 }
 
-// Marks the set active after a successful call to Listen().
+// Mark the set active after a successful call to Listen().
 func (s *listenSet) markActive() {
 	s.setState(listenSetStateActive)
 }
