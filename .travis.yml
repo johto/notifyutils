@@ -8,5 +8,5 @@ go:
   - tip
 
 script:
- - cd notifydispatcher/
+ - cd notifydispatcher
  - go test -v
