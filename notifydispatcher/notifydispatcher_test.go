@@ -95,6 +95,18 @@ func assertNotification(t *testing.T, ch <-chan *pq.Notification, channel string
 			assert(t, false, condition)
 	}
 }
+func assertBroadcastNotification(t *testing.T, ch BroadcastChannel, condition string) {
+	// see assertNotification
+	yield()
+
+	select {
+		case n := <-ch.Channel:
+			assert(t, n == struct{}{}, fmt.Sprintf("%+#v must be nil", n))
+		default:
+			assert(t, false, condition)
+	}
+}
+
 
 func (ml *mockedListener) assert(cond bool, condition string) {
 	assert(ml.t, cond, condition)
@@ -212,6 +224,10 @@ func (ml *mockedListener) unlisten(nd *NotifyDispatcher, channel string, ch chan
 	if len(flags) == 0 {
 		<-s1
 	}
+}
+
+func (ml *mockedListener) broadcast() {
+	ml.notifyCh <- nil
 }
 
 
@@ -610,4 +626,24 @@ func TestExportedErrors(t *testing.T) {
 	if err != ErrChannelNotActive {
 		t.Fatalf("expected ErrChannelNotActive; got %+#v", err)
 	}
+}
+
+func TestBroadcastChannels(t *testing.T) {
+	nd, ml := testSetup(t)
+	defer endTest(t, nd, ml)
+
+	ch1 := nd.OpenBroadcastChannel()
+	defer nd.CloseBroadcastChannel(ch1)
+	ch2 := nd.OpenBroadcastChannel()
+	defer nd.CloseBroadcastChannel(ch2)
+
+	ml.broadcast()
+	assertBroadcastNotification(t, ch1, "broadcast")
+	assertBroadcastNotification(t, ch2, "broadcast")
+
+	ml.broadcast()
+	assertBroadcastNotification(t, ch1, "broadcast")
+	ml.broadcast()
+	assertBroadcastNotification(t, ch1, "broadcast")
+	assertBroadcastNotification(t, ch2, "broadcast")
 }

@@ -165,7 +165,8 @@ func (d *NotifyDispatcher) CloseBroadcastChannel(ch BroadcastChannel) {
 	d.lock.Lock()
 	defer d.lock.Unlock()
 
-	if d.broadcastChannels.Remove(ch.elem) != ch {
+	r := d.broadcastChannels.Remove(ch.elem).(BroadcastChannel)
+	if r.Channel != ch.Channel {
 		panic("oops")
 	}
 	close(ch.Channel)
