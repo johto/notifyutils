@@ -1,7 +1,7 @@
 /*
 
-NotifySemaphore is a utility library for consumers using LISTEN / NOTIFY to
-avoid polling the database for new work.
+NotifySemaphore is a utility library for consumers using LISTEN / NOTIFY to avoid
+polling the database for new work.
 
 
 Usage
@@ -9,8 +9,8 @@ Usage
 
 NotifySemaphore supports multiple concurrent channels, but it does not support
 concurrent access to the same notification channel.  An attempt to do so might
-result in undefined behaviour or panics.  If you need to have multiple readers
-on the same channel, you should look at other solutions, such as
+result in undefined behaviour or panics.  If you need support for multiple
+readers on the same channel, you should look at other solutions, such as
 NotifyDispatcher.
 
 An example of the intended usage pattern:
@@ -186,14 +186,19 @@ func (s *NotifySemaphore) Unlisten(channel string) error {
 	return nil
 }
 
+// Calls Ping() on the underlying Listener.
 func (s *NotifySemaphore) Ping() error {
 	return s.listener.Ping()
 }
 
+// Controls the amount of time the connection is allowed to stay idle before
+// the server is pinged via Listener.Ping().
 func (s *NotifySemaphore) SetPingInterval(interval time.Duration) {
 	s.newPingIntervalChannel <- interval
 }
 
+// Sets whether a nil *pq.Notification should be sent automatically when the
+// server is pinged after inactivity.
 func (s *NotifySemaphore) SetBroadcastOnPingTimeout(broadcastOnPingTimeout bool) {
 	s.lock.Lock()
 	s.broadcastOnPingTimeout = broadcastOnPingTimeout
@@ -205,6 +210,8 @@ func (s *NotifySemaphore) pingTimeout() {
 		s.listener.Ping()
 	}()
 
+	// Grabbing the lock here is a bit wasteful, but ping timeouts are expected
+	// to be quite rare anyway.
 	s.lock.Lock()
 	if s.broadcastOnPingTimeout {
 		s.broadcast()
@@ -218,6 +225,7 @@ func (s *NotifySemaphore) pingTimeout() {
 func (s *NotifySemaphore) Close() error {
 	s.lock.Lock()
 	if s.closed {
+		s.lock.Unlock()
 		return errClosed
 	}
 	s.closed = true
@@ -226,7 +234,7 @@ func (s *NotifySemaphore) Close() error {
 
 	// wait for all channels to be closed
 	s.closeWaitGroup.Wait()
-	return nil
+	return s.listener.Close()
 }
 
 // Broadcast a nil *pq.Notification to all listeners.  Caller must be holding
@@ -237,7 +245,7 @@ func (s *NotifySemaphore) broadcast() {
 	}
 }
 
-// Send notication on a channel.  Caller must be holding s.lock.
+// Sends a notification on a channel.  Caller must be holding s.lock.
 func (s *NotifySemaphore) notify(channel string, n *pq.Notification) {
 	ch, ok := s.channels[channel]
 	if !ok {
@@ -248,7 +256,7 @@ func (s *NotifySemaphore) notify(channel string, n *pq.Notification) {
 		case ch <- n:
 
 		default:
-			// There's already a notification waiting in the channel, we can
+			// There's already a notification waiting in the channel; we can
 			// ignore this one.
 	}
 }
