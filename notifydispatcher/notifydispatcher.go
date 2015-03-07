@@ -130,6 +130,15 @@ func NewNotifyDispatcher(l Listener) *NotifyDispatcher {
 	return d
 }
 
+// Returns the number of channels which were active at some point in time
+// during the call to NumActiveChannels.
+func (d *NotifyDispatcher) NumActiveChannels() int {
+	d.lock.Lock()
+	numActiveChannels := len(d.channels)
+	d.lock.Unlock()
+	return numActiveChannels
+}
+
 // Sets the strategy for mitigating the adverse effects slow readers might have
 // on the dispatcher.  See SlowReaderEliminationStrategy.
 func (d *NotifyDispatcher) SetSlowReaderEliminationStrategy(strategy SlowReaderEliminationStrategy) {
