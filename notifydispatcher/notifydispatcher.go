@@ -259,15 +259,12 @@ dispatcherLoop:
 // Attempt to start listening on channel.  The caller should not be holding
 // lock.
 func (d *NotifyDispatcher) execListen(channel string) {
-	for {
-		err := d.listener.Listen(channel)
-		// ErrChannelAlreadyOpen is a valid return value here; we could have
-		// abandoned a channel in Unlisten() if the server returned an error
-		// for no apparent reason.
-		if err == nil ||
-		   err == pq.ErrChannelAlreadyOpen {
-			break
-		}
+	err := d.listener.Listen(channel)
+	if err == pq.ErrChannelAlreadyOpen {
+		// ErrChannelAlreadyOpen is a valid return value here; we could
+		// have abandoned a channel in Unlisten() if the server returned an
+		// error for no apparent reason.
+		err = nil
 	}
 
 	d.lock.Lock()
@@ -276,7 +273,10 @@ func (d *NotifyDispatcher) execListen(channel string) {
 	if !ok {
 		panic("oops")
 	}
-	set.markActive()
+	if err != nil {
+		delete(d.channels, channel)
+	}
+	set.markActive(err)
 }
 
 func (d *NotifyDispatcher) execUnlisten(channel string) {
@@ -437,12 +437,15 @@ const (
 	// The set has recently been emptied, and it's waiting for a call to
 	// Unlisten() to finish.
 	listenSetStateZombie
+	// The set could not be activated because the LISTEN query failed.
+	listenSetStateError
 )
 
 type listenSet struct {
 	channels map[chan<- *pq.Notification] struct{}
 	state listenSetState
 	activeOrClosedCond *sync.Cond
+	err error
 }
 
 func (d *NotifyDispatcher) newListenSet(firstInhabitant chan<- *pq.Notification) *listenSet {
@@ -464,12 +467,16 @@ func (s *listenSet) setState(newState listenSetState) {
 			expectedState = listenSetStateNewborn
 		case listenSetStateZombie:
 			expectedState = listenSetStateActive
+		case listenSetStateError:
+			expectedState = listenSetStateNewborn
+		default:
+			panic(fmt.Sprintf("unexpected state 0x%02x", newState))
 	}
 	if s.state != expectedState {
 		panic(fmt.Sprintf("illegal state transition from %v to %v", s.state, newState))
 	}
 	s.state = newState
-	if s.state == listenSetStateActive {
+	if s.state == listenSetStateActive || s.state == listenSetStateError {
 		s.activeOrClosedCond.Broadcast()
 	}
 }
@@ -533,12 +540,18 @@ func (s *listenSet) broadcast(strategy SlowReaderEliminationStrategy, n *pq.Noti
 	return true
 }
 
-// Mark the set active after a successful call to Listen().
-func (s *listenSet) markActive() {
-	s.setState(listenSetStateActive)
+// Mark the set active after a completed call to Listen().
+func (s *listenSet) markActive(err error) {
+	if err != nil {
+		s.err = err
+		s.setState(listenSetStateError)
+	} else {
+		s.setState(listenSetStateActive)
+	}
 }
 
-// Wait for the listen set to become "active".  Returns nil if successfull, or
+// Wait for the listen set to become "active".  Returns nil if successful, an
+// error if the set could not be activated (i.e. the LISTEN failed), or
 // errClosed if the dispatcher was closed while waiting.  The caller should be
 // holding d.lock.
 func (s *listenSet) waitForActive(closed *bool) error {
@@ -548,6 +561,8 @@ func (s *listenSet) waitForActive(closed *bool) error {
 		}
 		if s.state == listenSetStateActive {
 			return nil
+		} else if s.state == listenSetStateError {
+			return s.err
 		}
 		s.activeOrClosedCond.Wait()
 	}
