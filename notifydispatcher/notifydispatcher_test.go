@@ -30,6 +30,7 @@ type mockedListener struct {
 	t *testing.T
 	requestQueue []mlListenRequest
 	notifyCh chan *pq.Notification
+	listenErrors []error
 }
 
 func panicf(f string, v ...interface{}) {
@@ -132,6 +133,19 @@ func (ml *mockedListener) assertEmptyQueue() {
 func (ml *mockedListener) assertQueuedRequest() {
 	ml.assert(len(ml.requestQueue) > 0, "listener must have queued requests")
 }
+func (ml *mockedListener) assertNoListenErrors() {
+	ml.assert(len(ml.listenErrors) == 0, "listener must have no accrued errors")
+}
+
+// Waits for an asynchronous listen which can be satisfied without having to
+// send a LISTEN query to the server.
+func (ml *mockedListener) satisfiedAsyncListenWait(channel string, ch chan *pq.Notification) {
+	ml.assertQueuedRequest()
+	rq := ml.pop()
+	ml.assert(rq.channel == channel, "satisfiedAsyncListenWait")
+	rq.s3 <- struct{}{}
+	<-rq.s4
+}
 
 // operations for dealing with requestQueue; don't assert() since we might be
 // called from another goroutine
@@ -160,6 +174,18 @@ func (ml *mockedListener) push(rq mlListenRequest) {
 	ml.Lock()
 	ml.requestQueue = append(ml.requestQueue, rq)
 	ml.Unlock()
+}
+
+func (ml *mockedListener) accrueListenError(err error) {
+	ml.listenErrors = append(ml.listenErrors, err)
+}
+
+func (ml *mockedListener) acceptListenError(expected error) {
+	ml.assert(len(ml.listenErrors) > 0, "must have a listen error")
+	got := ml.listenErrors[0]
+	ml.listenErrors = ml.listenErrors[1:]
+	ml.assert(got.Error() == expected.Error(),
+			  fmt.Sprintf("%q must be %q", got.Error(), expected.Error()))
 }
 
 // The following two methods satisfy the first queued request, which must be of
@@ -210,7 +236,7 @@ func (ml *mockedListener) listen(nd *NotifyDispatcher, channel string, ch chan<-
 	go func() {
 		err := nd.Listen(channel, ch)
 		if err != nil {
-			panic(err)
+			ml.accrueListenError(err)
 		}
 		<-s3
 		s4 <- struct{}{}
@@ -288,6 +314,7 @@ func testSetup(t *testing.T) (*NotifyDispatcher, *mockedListener) {
 
 func endTest(t *testing.T, nd *NotifyDispatcher, ml *mockedListener) {
 	ml.assertEmptyQueue()
+	ml.assertNoListenErrors()
 	assertEmptyCh(t, ml.notifyCh, "must not have any queued notifications at the end of the test")
 	err := nd.Close()
 	if err != nil {
@@ -493,8 +520,65 @@ func TestListenUnlistenListenRaceCondition(t *testing.T) {
 	ml.satisfyListen("foo")
 }
 
-// Test that errors from Unlisten are ignored, and ErrChannelAlreadyOpen is not
-// treated as an error.
+// Test that ErrChannelAlreadyOpen is not treated as an error.
+func TestListenErrChannelAlreadyOpen(t *testing.T) {
+	nd, ml := testSetup(t)
+	defer endTest(t, nd, ml)
+
+	ch := make(chan *pq.Notification, 1)
+
+	ml.notify("foo")
+	assertEmptyCh(t, ch, "not listening yet")
+
+	ml.listen(nd, "foo", ch)
+
+	yield()
+	ml.notify("foo")
+	assertEmptyCh(t, ch, "set not active yet")
+
+	ml.satisfyListenErr("foo", pq.ErrChannelAlreadyOpen)
+	ml.notify("foo")
+	assertNotification(t, ch, "foo", "listen request satisfied")
+}
+
+// Test error responses to LISTEN command
+func TestListenError(t *testing.T) {
+	nd, ml := testSetup(t)
+	defer endTest(t, nd, ml)
+
+	listenErr := fmt.Errorf("oopsie daisies")
+
+	ch1 := make(chan *pq.Notification, 1)
+	ch2 := make(chan *pq.Notification, 2)
+
+	ml.notify("foo")
+	assertEmptyCh(t, ch1, "not listening yet")
+
+	ml.listen(nd, "foo", ch1)
+
+	yield()
+	ml.notify("foo")
+	assertEmptyCh(t, ch1, "set not active")
+
+	ml.satisfyListenErr("foo", listenErr)
+	ml.assertEmptyQueue()
+	ml.notify("foo")
+	assertEmptyCh(t, ch1, "set not active")
+
+	ml.acceptListenError(listenErr)
+
+	ml.listen(nd, "foo", ch1)
+	ml.listen(nd, "foo", ch2, noWait)
+
+	ml.satisfyListenErr("foo", listenErr)
+	ml.satisfiedAsyncListenWait("foo", ch2)
+	ml.assertEmptyQueue()
+
+	ml.acceptListenError(listenErr)
+	ml.acceptListenError(listenErr)
+}
+
+// Test that errors from Unlisten are ignored.
 func TestUnlistenErr(t *testing.T) {
 	nd, ml := testSetup(t)
 	defer endTest(t, nd, ml)
@@ -518,11 +602,6 @@ func TestUnlistenErr(t *testing.T) {
 	ml.satisfyUnlistenErr("foo", fmt.Errorf("this error should be ignored"))
 	ml.notify("foo")
 	assertEmptyCh(t, ch, "set not active anymore")
-
-	ml.listen(nd, "foo", ch)
-	ml.satisfyListenErr("foo", pq.ErrChannelAlreadyOpen)
-	ml.notify("foo")
-	assertNotification(t, ch, "foo", "listen request satisfied")
 }
 
 func TestCloseSlowReaders(t *testing.T) {
