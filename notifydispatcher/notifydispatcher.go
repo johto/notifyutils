@@ -39,7 +39,7 @@ Viz:
         }
         select{}
     }
-    
+
 */
 package notifydispatcher
 
